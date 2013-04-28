@@ -18,32 +18,32 @@
 #
 use strict;
 use warnings;
-
-#use FindBin;
-#use lib "$FindBin::Bin/lib";
-use LWP::UserAgent;
-
-#use HTTP::Request::Common;
-use HTTP::Date qw(str2time);
-use URI::Escape;
 use Getopt::Long;
-use File::Spec;
-use IO::File;
 use Encode;
 use English;
+use IO::File;
+use File::Spec;
 
-use constant IAS3URLBASE   => 'http://s3.us.archive.org';
-use constant IADLURLBASE   => 'http://www.archive.org/download';
-use constant IAMETAURLBASE => 'http://www.archive.org/metadata';
-use constant META_XML      => '_meta.xml';
+use LWP::UserAgent;
+use HTTP::Date qw(str2time);
+use URI::Escape;
+use File::HomeDir;
+use Data::Show;
+use Readonly;
 
-use constant ENV_AUTHKEYS => 'IAS3KEYS';
-use constant VERSION      => '0.7.6';
+Readonly::Scalar my $IAS3URLBASE   => 'http://s3.us.archive.org';
+Readonly::Scalar my $IADLURLBASE   => 'http://www.archive.org/download';
+Readonly::Scalar my $IAMETAURLBASE => 'http://www.archive.org/metadata';
+Readonly::Scalar my $META_XML      => '_meta.xml';
 
-use constant UPLOADJOURNAL => 'ias3upload.jnl';
+Readonly::Scalar my $ENV_AUTHKEYS => 'IAS3KEYS';
+Readonly::Scalar my $VERSION      => '0.7.6';
+
+Readonly::Scalar my $UPLOADJOURNAL => 'ias3upload.jnl';
 
 my $inencoding  = 'UTF-8';
 my $outencoding = 'UTF-8';
+my $ias3keys;
 
 sub resolvePath {
     my $rpath = shift;
@@ -121,25 +121,6 @@ sub splitCSV {
     }
     push( @fields, join( '', @v ) );
     return ( \@fields, $inquote );
-}
-
-# obsoleted code that reads file content into a string of bytes.
-# since this method won't work well with large files, I implemented
-# PUT_FILE below for efficient file transfer.
-sub getContent {
-    my $path = shift;
-    my $content;
-    open( IN, $path ) or die "failed to open $path: $!\n";
-    my $o = 0;
-    my $b;
-    do {
-        $b = read( IN, $content, 4096, $o );
-        defined $b or die "error reading from $path: $!\n";
-        $o += $b;
-    } until ( $b == 0 );
-    close(IN);
-    print STDERR "$path: ", length($content), "bytes\n";
-    return $content;
 }
 
 # variant of HTTP::Request::Common->PUT that handles upload of large file
@@ -261,7 +242,7 @@ sub parseJSON {
         return $v;
     }
     elsif ( $json =~ s/^(null|false)// ) {
-        return undef;
+        return;
     }
     elsif ( $json =~ s/^true// ) {
         return 1;
@@ -277,7 +258,7 @@ sub fetchMetadata {
 
     # retrieve item metadata with new metadata API.
     # API returns "{}" for non-existent item, rather than 404.
-    my $res = $ua->get( IAMETAURLBASE . '/' . $itemname );
+    my $res = $ua->get( $IAMETAURLBASE . '/' . $itemname );
     if ( $res->is_success ) {
 
         # TODO JSON parse error handling
@@ -285,6 +266,8 @@ sub fetchMetadata {
 
         #print STDERR "META:".$json."\n";
         my $data = parseJSON($json);
+
+        show $data;
         unless ( defined $data ) {
 
             # item does not exist - this is not an error.
@@ -299,55 +282,9 @@ sub fetchMetadata {
         return $data;
     }
     else {
-        return undef;
+        return;
     }
 }
-
-my $ias3keys;
-
-# controls
-my $help_and_exit = 0;
-my $initConfig    = 0;
-
-# no actual upload
-my $dryrun = 0;
-
-# print more info
-my $verbose = 0;
-
-# ignore previous upload
-my $forceupload = 0;
-
-# check against storage (slow)
-my $checkstore = 0;
-my $metatbl    = 'metadata.csv';    # CSV file having metadata for each item
-
-# default metadata from command line
-my %metadefaults;
-
-# how metadata is applied to items:
-# 'keep': make no change to existing metadata.
-# 'update': keep existing metadata (if item exists), update those specified in
-#   metadata.csv.
-# 'replace': wipe out existing metadata and set what's specified in metadata.csv
-#   anew.
-my $metadataAction = 'update';
-
-# don't update metadata of existing items (in fact it is the default
-# behavior of IAS3. I made 'override-mode' default because it matches user's
-# expectation.)
-#my $keepExistingMetadata = 0;
-my $noDerive = 0;
-
-#my $forceMetadataUpdate = 0;
-my $ignoreNofile = 0;
-
-# these control options are not implemented yet.
-my $keepOldVersion = 0;
-my $cascadeDelete  = 0;
-
-my $homedir = $ENV{'HOME'};
-$homedir =~ s![^/]$!$&/!;    # ensure $homedir has trailing slash
 
 sub confirm {
     my ( $prompt, $emptyRes ) = @_;
@@ -362,6 +299,8 @@ sub confirm {
 }
 
 sub initConfig {
+    my $homedir = shift;
+
     $homedir || die "sorry, failed to locate your home directory\n";
     -d $homedir || die "your home directory does not exist...?\n";
 
@@ -432,12 +371,11 @@ sub initConfig {
 sub writeConfig {
     my ( $cfg, $accessKey, $secretKey ) = @_;
     STDOUT->printflush("Writing ~/.ias3cfg...");
-    unless ( open( CF, '>', $cfg ) ) {
-        die "\noops, failed to open $cfg for writing: $!\n";
-    }
-    print CF "access_key = $accessKey\n";
-    print CF "secret_key = $secretKey\n";
-    close(CF);
+    open( my $cf, '>', $cfg )
+        or die "\noops, failed to open $cfg for writing: $!\n";
+    print {$cf} "access_key = $accessKey\n";
+    print {$cf} "secret_key = $secretKey\n";
+    close $cf;
 
     # make sure it's only readable by the owner
     chmod( 0600, $cfg );
@@ -451,7 +389,7 @@ sub checkKey {
 sub getKeysFromWeb {
     my ( $username, $password ) = @_;
     my $ua = LWP::UserAgent->new;
-    $ua->agent( 'ias3upload/' . VERSION );
+    $ua->agent( 'ias3upload/' . $VERSION );
     $ua->timeout(20);
     $ua->env_proxy;
 
@@ -498,19 +436,21 @@ sub getKeysFromWeb {
 
 sub readConfig {
     my $name = shift;
-    open( CF, $name ) || return;
+
+    open( my $cf, '<', $name ) || return;
     print STDERR "reading configuration from $name...\n";
     my @keys = ( '', '' );
 
     # assumes one-parameter-per-line format of .s3cfg (s3cmd)
-    while (<CF>) {
+    while (<$cf>) {
         next unless /^([_a-zA-Z]+)\s*=\s*(.*?)\s*$/;
         my $param = $1;
         my $value = $2;
         $param eq 'access_key' and ( $keys[0] = $value, next );
         $param eq 'secret_key' and ( $keys[1] = $value, next );
     }
-    close(CF);
+    close $cf;
+
     if ( $keys[0] && $keys[1] ) {
         $ias3keys = join( ':', @keys );
     }
@@ -577,60 +517,106 @@ sub unspecified {
     return !defined($v) || $v eq '' || ref $v eq 'ARRAY' && $#$v == -1;
 }
 
-# IAS3 auth keys are taken from three locations
-# (from lowest to highest priority):
-# 1) {access,secret}_key parameters in $HOME/.s3cfg
-# 2) {access,secret}_key parameters in $HOME/.ias3cfg
-# 3) IAS3KEYS environment variable
-# 4) -k command line option
+sub main {
 
-if ($homedir) {
-    readConfig( $homedir . ".s3cfg" );  # config file for s3cmd
-    readConfig( $homedir . ".ias3cfg" )
-        ;                               # IAS3 config file, in the same format
-}
+    # controls
+    my $help_and_exit = 0;
+    my $initConfig    = 0;
 
-if ( exists $ENV{ ENV_AUTHKEYS() } ) {
-    my $keys = $ENV{ ENV_AUTHKEYS() };
-    unless ( $keys =~ /^[A-Za-z0-9]+:[A-Za-z0-9]+$/ ) {
-        warn "WARNING:", ENV_AUTHKEYS,
-            " should be in format ACCESSKEY:SECRETKEY (ignored)\n";
+    # no actual upload
+    my $dryrun = 0;
+
+    # print more info
+    my $verbose = 0;
+
+    # ignore previous upload
+    my $forceupload = 0;
+
+    # check against storage (slow)
+    my $checkstore = 0;
+    my $metatbl    = 'metadata.csv';  # CSV file having metadata for each item
+
+    # default metadata from command line
+    my %metadefaults;
+
+# how metadata is applied to items:
+# 'keep': make no change to existing metadata.
+# 'update': keep existing metadata (if item exists), update those specified in
+#   metadata.csv.
+# 'replace': wipe out existing metadata and set what's specified in metadata.csv
+#   anew.
+    my $metadataAction = 'update';
+
+  # don't update metadata of existing items (in fact it is the default
+  # behavior of IAS3. I made 'override-mode' default because it matches user's
+  # expectation.)
+  #my $keepExistingMetadata = 0;
+    my $noDerive = 0;
+
+    #my $forceMetadataUpdate = 0;
+    my $ignoreNofile = 0;
+
+    # these control options are not implemented yet.
+    my $keepOldVersion = 0;
+    my $cascadeDelete  = 0;
+
+    my $homedir = $ENV{'HOME'};
+    $homedir =~ s![^/]$!$&/!;    # ensure $homedir has trailing slash
+
+    # IAS3 auth keys are taken from three locations
+    # (from lowest to highest priority):
+    # 1) {access,secret}_key parameters in $HOME/.s3cfg
+    # 2) {access,secret}_key parameters in $HOME/.ias3cfg
+    # 3) IAS3KEYS environment variable
+    # 4) -k command line option
+
+    if ($homedir) {
+        readConfig( $homedir . ".s3cfg" );    # config file for s3cmd
+        readConfig( $homedir . ".ias3cfg" )
+            ;    # IAS3 config file, in the same format
     }
-    else {
-        $ias3keys = $keys;
+
+    if ( exists $ENV{ ENV_AUTHKEYS() } ) {
+        my $keys = $ENV{ ENV_AUTHKEYS() };
+        unless ( $keys =~ /^[A-Za-z0-9]+:[A-Za-z0-9]+$/ ) {
+            warn "WARNING:", $ENV_AUTHKEYS,
+                " should be in format ACCESSKEY:SECRETKEY (ignored)\n";
+        }
+        else {
+            $ias3keys = $keys;
+        }
     }
-}
 
-GetOptions(
-    'h'   => \$help_and_exit,
-    'n'   => \$dryrun,
-    'v+'  => \$verbose,
-    'f'   => \$forceupload,
-    'm'   => \$checkstore,
-    'l=s' => \$metatbl,
-    'k=s' => \$ias3keys,
-    'c=s' => \$metadefaults{'collection'},
-    'i=s' => \$metadefaults{'item'},
+    GetOptions(
+        'h'   => \$help_and_exit,
+        'n'   => \$dryrun,
+        'v+'  => \$verbose,
+        'f'   => \$forceupload,
+        'm'   => \$checkstore,
+        'l=s' => \$metatbl,
+        'k=s' => \$ias3keys,
+        'c=s' => \$metadefaults{'collection'},
+        'i=s' => \$metadefaults{'item'},
 
-    # not yet supported metadata default options
-    'dd=s' => \$metadefaults{'description'},
-    'dc=s' => \$metadefaults{'creator'},
-    'dm=s' => \$metadefaults{'mediatype'},
-    'init' => \$initConfig,
+        # not yet supported metadata default options
+        'dd=s' => \$metadefaults{'description'},
+        'dc=s' => \$metadefaults{'creator'},
+        'dm=s' => \$metadefaults{'mediatype'},
+        'init' => \$initConfig,
 
-    # control options
-    'keep-metadata'    => sub { $metadataAction = 'keep'; },
-    'replace-metadata' => sub { $metadataAction = 'replace'; },
-    'no-derive'        => \$noDerive,
-    'ignore-nofile'    => \$ignoreNofile,
+        # control options
+        'keep-metadata'    => sub { $metadataAction = 'keep'; },
+        'replace-metadata' => sub { $metadataAction = 'replace'; },
+        'no-derive'        => \$noDerive,
+        'ignore-nofile'    => \$ignoreNofile,
 
-    #'update-metadata'=>\$forceMetadataUpdate,
-    # not yet supported control options
-    'keep-old'       => \$keepOldVersion,
-    'cascade-delete' => \$cascadeDelete,
-);
-if ($help_and_exit) {
-    print STDERR <<"EOH";
+        #'update-metadata'=>\$forceMetadataUpdate,
+        # not yet supported control options
+        'keep-old'       => \$keepOldVersion,
+        'cascade-delete' => \$cascadeDelete,
+    );
+    if ($help_and_exit) {
+        print STDERR <<"EOH";
 $0 [OPTIONS]
 options:
     -h \tshow this help message and exit.
@@ -648,87 +634,89 @@ options:
     --init\tcreate ~/.ias3cfg file by fetching credentials from IA web.
     -v\t\tprint extra trace output.
 EOH
-    exit(0);
-}
-
-# check for incompatible option combinations
-#if ($keepExistingMetadata && $forceMetadataUpdate) {
-#    die "conflicting options: --update-metadata and ".
-#	"--keep-existing-metadata";
-#}
-if ($initConfig) {
-    initConfig();
-    exit(0);
-}
-
-unless ( defined $ias3keys ) {
-    die "ERROR:"
-        . "I need your IAS3 key pair for calling IAS3 API. "
-        . "Please supply it by one of following methods:\n\n"
-        . "1) add command line option \"-k <access_key>:<secret_key>\",\n"
-        . "2) set <access_key>:<secret_key> to environment variable '"
-        . ENV_AUTHKEYS . "',\n"
-        . "3) create a file '.ias3cfg' in your home directory with your access_key and\n"
-        . "   secret_key parameters in it (run '$0 --init' to create it\n"
-        . "   interactively)\n\n"
-        . "You can get your IAS3 keys at http://www.archive.org/account/s3.php (login required)\n";
-}
-unless ( $ias3keys =~ /^[A-Za-z0-9]+:[A-Za-z0-9]+$/ ) {
-    die "ERROR:keys must be in format ACCESSKEY:SECRETKEY\n";
-}
-
-# process multi-valued metadata defaults
-foreach my $m ( ('collection') ) {
-    if ( defined $metadefaults{$m} ) {
-        my @values = split( /\s*[,;]\s*/, $metadefaults{$m} );
-        $metadefaults{$m} = \@values;
-    }
-}
-
-# entire metatbl is read into memory before starting upload.
-my $mt = new IO::File;
-unless ( $mt->open($metatbl) ) {
-    die "cannot open $metatbl: $!\n";
-}
-my $task = {
-    items => {},
-    files => []
-};
-
-# keep change to $/ local
-{
-    local ($/) = $/;
-    my @fieldnames = readCSVRow($mt);
-    my %colidx;
-    foreach my $i ( 0 .. $#fieldnames ) {
-        print STDERR "Field[", $i + 1, "]:", $fieldnames[$i], "\n"
-            if $verbose;
-
-        # just ignore empty metadata name cell without complaining
-        next if $fieldnames[$i] eq '';
-        unless ( $fieldnames[$i] =~ /^([-a-zA-Z_]+)(\[\d+\])?$/ ) {
-            die "ERROR:bad metadata name '", escapeText( $fieldnames[$i] ),
-                "' in column " . ( $i + 1 ) . "\n";
-        }
-        my $fn = $1;
-        my $ix = $2;
-
-        # index part is unused for now and simply discarded
-        $fieldnames[$i] = $fn;
-        push( @{ $colidx{$fn} }, $i );
+        exit(0);
     }
 
-    # some must-have fields
-    # "file" field must exist as a column - no command line default
-    exists $colidx{'file'} or die "ERROR:required column 'file' is missing\n";
+    # check for incompatible option combinations
+    #if ($keepExistingMetadata && $forceMetadataUpdate) {
+    #    die "conflicting options: --update-metadata and ".
+    #	"--keep-existing-metadata";
+    #}
+    if ($initConfig) {
+        initConfig($homedir);
+        exit(0);
+    }
 
-    # "item" may be given in a column or in command line
-    foreach my $cn ( ('item') ) {
-        unless ( exists $colidx{$cn} || defined $metadefaults{$cn} ) {
-            die
-                "ERROR:'$cn' must either exist as a column, or be specified by option\n";
+    unless ( defined $ias3keys ) {
+        die "ERROR:"
+            . "I need your IAS3 key pair for calling IAS3 API. "
+            . "Please supply it by one of following methods:\n\n"
+            . "1) add command line option \"-k <access_key>:<secret_key>\",\n"
+            . "2) set <access_key>:<secret_key> to environment variable '"
+            . "$ENV_AUTHKEYS',\n"
+            . "3) create a file '.ias3cfg' in your home directory with your access_key and\n"
+            . "   secret_key parameters in it (run '$0 --init' to create it\n"
+            . "   interactively)\n\n"
+            . "You can get your IAS3 keys at http://www.archive.org/account/s3.php (login required)\n";
+    }
+    unless ( $ias3keys =~ /^[A-Za-z0-9]+:[A-Za-z0-9]+$/ ) {
+        die "ERROR:keys must be in format ACCESSKEY:SECRETKEY\n";
+    }
+
+    # process multi-valued metadata defaults
+    foreach my $m ( ('collection') ) {
+        if ( defined $metadefaults{$m} ) {
+            my @values = split( /\s*[,;]\s*/, $metadefaults{$m} );
+            $metadefaults{$m} = \@values;
         }
     }
+
+    # entire metatbl is read into memory before starting upload.
+    my $mt = new IO::File;
+    unless ( $mt->open($metatbl) ) {
+        die "cannot open $metatbl: $!\n";
+    }
+    my $task = {
+        items => {},
+        files => []
+    };
+
+    # keep change to $/ local
+    {
+        local ($/) = $/;
+        my @fieldnames = readCSVRow($mt);
+        my %colidx;
+        foreach my $i ( 0 .. $#fieldnames ) {
+            print STDERR "Field[", $i + 1, "]:", $fieldnames[$i], "\n"
+                if $verbose;
+
+            # just ignore empty metadata name cell without complaining
+            next if $fieldnames[$i] eq '';
+            unless ( $fieldnames[$i] =~ /^([-a-zA-Z_]+)(\[\d+\])?$/ ) {
+                die "ERROR:bad metadata name '",
+                    escapeText( $fieldnames[$i] ),
+                    "' in column " . ( $i + 1 ) . "\n";
+            }
+            my $fn = $1;
+            my $ix = $2;
+
+            # index part is unused for now and simply discarded
+            $fieldnames[$i] = $fn;
+            push( @{ $colidx{$fn} }, $i );
+        }
+
+        # some must-have fields
+        # "file" field must exist as a column - no command line default
+        exists $colidx{'file'}
+            or die "ERROR:required column 'file' is missing\n";
+
+        # "item" may be given in a column or in command line
+        foreach my $cn ( ('item') ) {
+            unless ( exists $colidx{$cn} || defined $metadefaults{$cn} ) {
+                die
+                    "ERROR:'$cn' must either exist as a column, or be specified by option\n";
+            }
+        }
 
 # # other metadata fields may be given in a column or in command line
 # foreach my $cn (('item', 'creator', 'mediatype', 'collection')) {
@@ -737,130 +725,132 @@ my $task = {
 #     }
 # }
 # check for columns that can appear only once
-    foreach my $cn ( ( 'item', 'file', 'mediatype' ) ) {
-        if ( exists $colidx{$cn} && $#{ $colidx{$cn} } > 0 ) {
-            die "ERROR:sorry, you can't have $cn in more than one column\n";
+        foreach my $cn ( ( 'item', 'file', 'mediatype' ) ) {
+            if ( exists $colidx{$cn} && $#{ $colidx{$cn} } > 0 ) {
+                die
+                    "ERROR:sorry, you can't have $cn in more than one column\n";
+            }
+            $colidx{$cn} = $colidx{$cn}->[0] if exists $colidx{$cn};
         }
-        $colidx{$cn} = $colidx{$cn}->[0] if exists $colidx{$cn};
-    }
 
-    my $curCollections = [];
-    my $curItem;
+        my $curCollections = [];
+        my $curItem;
 
-    # read on rest of the metatbl file... we first read entire metatbl file
-    # to construct a list of tasks to be performed (TODO merge in information
-    # from jornal of previous upload for retry/update). Verify information to
-    # report any errors before starting actual upload work.
+     # read on rest of the metatbl file... we first read entire metatbl file
+     # to construct a list of tasks to be performed (TODO merge in information
+     # from jornal of previous upload for retry/update). Verify information to
+     # report any errors before starting actual upload work.
 
-    # collections named in command-line become initial $curCollections
-    if ( $metadefaults{'collection'} ) {
+        # collections named in command-line become initial $curCollections
+        if ( $metadefaults{'collection'} ) {
 
-        # note $metadefaults{'collection'} is an array if defined
-        $curCollections = $metadefaults{'collection'};
-    }
-
-    # similarly for $curItem
-    if ( $metadefaults{'item'} ) {
-        $curItem = {
-            name     => $metadefaults{'item'},
-            metadata => {},
-            files    => []
-        };
-        $task->{items}{ $curItem->{name} } = $curItem;
-    }
-
-    # read body rows
-    while ( my @fields = readCSVRow($mt) ) {
-
-        # skip empty row
-        next unless ( grep( /\S/, @fields ) );
-        my $collections = [];
-        if ( defined $colidx{'collection'} ) {
-            my @collections
-                = grep( $_, @fields[ @{ $colidx{'collection'} } ] );
-            $collections = \@collections;
+            # note $metadefaults{'collection'} is an array if defined
+            $curCollections = $metadefaults{'collection'};
         }
+
+        # similarly for $curItem
+        if ( $metadefaults{'item'} ) {
+            $curItem = {
+                name     => $metadefaults{'item'},
+                metadata => {},
+                files    => []
+            };
+            $task->{items}{ $curItem->{name} } = $curItem;
+        }
+
+        # read body rows
+        while ( my @fields = readCSVRow($mt) ) {
+
+            # skip empty row
+            next unless ( grep( /\S/, @fields ) );
+            my $collections = [];
+            if ( defined $colidx{'collection'} ) {
+                my @collections
+                    = grep( $_, @fields[ @{ $colidx{'collection'} } ] );
+                $collections = \@collections;
+            }
 
    # $curCollections carries over only when 'collection' columns are all empty
-        unless (@$collections) { $collections = $curCollections; }
+            unless (@$collections) { $collections = $curCollections; }
 
-        #     @$collections or (@collections = @$curCollections);
-        #     unless (@collections) {
-        # 	die "ERROR:collection is unknown at $metatbl:$.";
-        #     }
+            #     @$collections or (@collections = @$curCollections);
+            #     unless (@collections) {
+            # 	die "ERROR:collection is unknown at $metatbl:$.";
+            #     }
 
-        my $itemName
-            = ( defined $colidx{'item'} ) && $fields[ $colidx{'item'} ]
-            || $curItem->{name};
-        unless ($itemName) {
-            die "item identifier is unknown at $metatbl:$.\n";
-        }
-        my $item = ( $task->{items}{$itemName}
-                ||= { name => $itemName, metadata => {}, files => [] } );
+            my $itemName
+                = ( defined $colidx{'item'} ) && $fields[ $colidx{'item'} ]
+                || $curItem->{name};
+            unless ($itemName) {
+                die "item identifier is unknown at $metatbl:$.\n";
+            }
+            my $item = ( $task->{items}{$itemName}
+                    ||= { name => $itemName, metadata => {}, files => [] } );
 
-        $item->{metadata}{collection} = $collections;
+            $item->{metadata}{collection} = $collections;
 
-        #$item->{collections} = \@collections;
+            #$item->{collections} = \@collections;
 
-        # allow for a row without "file" (i.e. empty), which just specifies
-        # metadata for the item, no file to upload
-        my $file = ( exists $colidx{'file'} ) && $fields[ $colidx{'file'} ];
-        if ($file) {
+           # allow for a row without "file" (i.e. empty), which just specifies
+           # metadata for the item, no file to upload
+            my $file
+                = ( exists $colidx{'file'} ) && $fields[ $colidx{'file'} ];
+            if ($file) {
 
-            # file field designate a file relative to metatbl.
-            my $path = resolvePath( $file, $metatbl );
+                # file field designate a file relative to metatbl.
+                my $path = resolvePath( $file, $metatbl );
 
       # filename is used as the name of uploaded file (last component of URL)
       # XXX: currently ignores directory part - when multiple files in an item
       # have the same filename, last one clobbers previous ones.
       # @pathcomps = (volume, directory, filename)
-            my @pathcomps = File::Spec->splitpath($file);
-            my $filename  = $pathcomps[2];
+                my @pathcomps = File::Spec->splitpath($file);
+                my $filename  = $pathcomps[2];
 
-            # do some sanity check on the file now.
-            unless ( -e $path ) {
-                die "$path: file does not exist\n";
+                # do some sanity check on the file now.
+                unless ( -e $path ) {
+                    die "$path: file does not exist\n";
+                }
+                unless ( -f _ ) {
+                    die "$path: not a plain file\n";
+                }
+                unless ( -r _ ) {
+                    die "file $path is not readable\n";
+                }
+                my @st = stat(_);
+                unless (@st) {
+                    die "stat failed on $path: $!\n";
+                }
+                my $fileobj = {
+                    file     => $file,
+                    path     => $path,
+                    filename => $filename,
+                    item     => $item,
+                    size     => $st[7],
+                    mtime    => $st[9]
+                };
+                push( @{ $item->{files} }, $fileobj );
             }
-            unless ( -f _ ) {
-                die "$path: not a plain file\n";
-            }
-            unless ( -r _ ) {
-                die "file $path is not readable\n";
-            }
-            my @st = stat(_);
-            unless (@st) {
-                die "stat failed on $path: $!\n";
-            }
-            my $fileobj = {
-                file     => $file,
-                path     => $path,
-                filename => $filename,
-                item     => $item,
-                size     => $st[7],
-                mtime    => $st[9]
-            };
-            push( @{ $item->{files} }, $fileobj );
-        }
 
     # add metadata to item. As currently only items get metadata, it's simple.
     # it will become confusing when backend start accepting metadata for
     # files -- which we should apply metadata, file or item, for rows where
     # they are created at once?
-        foreach my $i ( 0 .. $#fields ) {
+            foreach my $i ( 0 .. $#fields ) {
 
             # $fieldnames[$i] is 'undefined' for empty header, but $fn will be
             # empty string, not 'undefined'.
-            my $fn = $fieldnames[$i];
-            if ( $fn eq '' && $fields[$i] ne '' ) {
-                warn "WARNING:$metatbl:$.:",
-                    "a value found in column ", $i + 1,
-                    ", which has no metadata name ",
-                    "(ignored)\n";
-                next;
-            }
+                my $fn = $fieldnames[$i];
+                if ( $fn eq '' && $fields[$i] ne '' ) {
+                    warn "WARNING:$metatbl:$.:",
+                        "a value found in column ", $i + 1,
+                        ", which has no metadata name ",
+                        "(ignored)\n";
+                    next;
+                }
 
-            # these fields are special and already handled above
-            next if $fn =~ /^(file|item|collection)$/;
+                # these fields are special and already handled above
+                next if $fn =~ /^(file|item|collection)$/;
 
         # other fields are plain metadata (X-Archive-Meta-* headers)
         # note that index ([\d+] after column name) doesn't matter at all
@@ -868,197 +858,203 @@ my $task = {
         # (also metadata index would be different from those user specified in
         # metadata.csv). we'd need to change this behavior if users want to
         # enforce order with indexes.
-            push( @{ $item->{metadata}{$fn} }, $fields[$i] )
-                if $fields[$i] ne '';
+                push( @{ $item->{metadata}{$fn} }, $fields[$i] )
+                    if $fields[$i] ne '';
+            }
+
+            # use item identifier as title if unspecified
+            $item->{'title'} ||= $item->{name};
+
+            $curItem        = $item;
+            $curCollections = $collections;
+
         }
+    }    # end of scope for $/
+    $mt->close();
 
-        # use item identifier as title if unspecified
-        $item->{'title'} ||= $item->{name};
-
-        $curItem        = $item;
-        $curCollections = $collections;
-
-    }
-}    # end of scope for $/
-$mt->close();
-
-# calculate total upload size for each item, for size-hint
-foreach my $item ( values %{ $task->{items} } ) {
-    foreach my $file ( @{ $item->{items} } ) {
-        $item->{size} += $file->{size};
-    }
-}
-
-# read journal file left by previous upload
-my $journalFile = resolvePath( UPLOADJOURNAL, $metatbl );
-if ( open( my $rjnl, '<', $journalFile ) ) {
-    my %fileidx;
+    # calculate total upload size for each item, for size-hint
     foreach my $item ( values %{ $task->{items} } ) {
-        foreach my $file ( @{ $item->{files} } ) {
-            $fileidx{ $file->{file} } = $file;
+        foreach my $file ( @{ $item->{items} } ) {
+            $item->{size} += $file->{size};
         }
     }
-    while ( $_ = <$rjnl> ) {
-        chomp;
-        if (/^U (.*)/) {
-            my ( $file, $mtime, $itemName, $filename ) = split( /\s+/, $1 );
-            $file     = uri_unescape($file);
-            $filename = uri_unescape($filename);
-            if ( exists $fileidx{$file} ) {
-                $fileidx{$file}->{uploaded} = {
-                    mtime    => $mtime,
-                    itemName => $itemName,
-                    filename => $filename
-                };
+
+    # read journal file left by previous upload
+    my $journalFile = resolvePath( $UPLOADJOURNAL, $metatbl );
+    if ( open( my $rjnl, '<', $journalFile ) ) {
+        my %fileidx;
+        foreach my $item ( values %{ $task->{items} } ) {
+            foreach my $file ( @{ $item->{files} } ) {
+                $fileidx{ $file->{file} } = $file;
             }
         }
+        while ( $_ = <$rjnl> ) {
+            chomp;
+            if (/^U (.*)/) {
+                my ( $file, $mtime, $itemName, $filename )
+                    = split( /\s+/, $1 );
+                $file     = uri_unescape($file);
+                $filename = uri_unescape($filename);
+                if ( exists $fileidx{$file} ) {
+                    $fileidx{$file}->{uploaded} = {
+                        mtime    => $mtime,
+                        itemName => $itemName,
+                        filename => $filename
+                    };
+                }
+            }
+        }
+        close($rjnl);
     }
-    close($rjnl);
-}
 
-my $ua = LWP::UserAgent->new();
-$ua->agent( 'ias3upload/' . VERSION );
-$ua->timeout(20);
-$ua->env_proxy;
+    my $ua = LWP::UserAgent->new();
+    $ua->agent( 'ias3upload/' . $VERSION );
+    $ua->timeout(20);
+    $ua->env_proxy;
 
-$ua->default_headers->push_header( 'authorization' => "LOW $ias3keys" );
+    $ua->default_headers->push_header( 'authorization' => "LOW $ias3keys" );
 
-#$ua->default_headers->push_header('x-amz-auto-make-bucket'=>'1');
+    #$ua->default_headers->push_header('x-amz-auto-make-bucket'=>'1');
 
-# collect files to upload
-foreach my $item ( values %{ $task->{items} } ) {
-    foreach my $file ( @{ $item->{files} } ) {
-        my $uripath = "/" . $file->{item}{name} . "/" . $file->{filename};
-        if ( !$forceupload ) {
-            if ( my $last = $file->{uploaded} ) {
+    # collect files to upload
+    foreach my $item ( values %{ $task->{items} } ) {
+        foreach my $file ( @{ $item->{files} } ) {
+            my $uripath = "/" . $file->{item}{name} . "/" . $file->{filename};
+            if ( !$forceupload ) {
+                if ( my $last = $file->{uploaded} ) {
 
               # this file was uploaded in previous run. re-upload it only when
               # something has changed.
-                if (   $file->{mtime} <= $last->{mtime}
-                    && $file->{item}{name} eq $last->{itemName}
-                    && $file->{filename} eq $last->{filename} )
-                {
-                    warn "File: ", $file->{file},
-                        ": skipping - no change since last upload\n";
-                    next;
+                    if (   $file->{mtime} <= $last->{mtime}
+                        && $file->{item}{name} eq $last->{itemName}
+                        && $file->{filename} eq $last->{filename} )
+                    {
+                        warn "File: ", $file->{file},
+                            ": skipping - no change since last upload\n";
+                        next;
+                    }
                 }
             }
-        }
-        if ($checkstore) {
-            my $dlurl = IADLURLBASE . $uripath;
-            print STDERR "checking ", $dlurl, "...\n" if $verbose;
-            my $res = $ua->head($dlurl);
-            if ( $res->is_success ) {
+            if ($checkstore) {
+                my $dlurl = $IADLURLBASE . $uripath;
+                print STDERR "checking ", $dlurl, "...\n" if $verbose;
+                my $res = $ua->head($dlurl);
+                if ( $res->is_success ) {
 
               # file exists - check date (of last upload) against file's mtime
-                my $m = $res->headers->{'date'};
-                if ( $m && str2time($m) >= $file->{mtime} ) {
-                    warn "skipping - upload date later than file's mtime\n";
-                    next;
+                    my $m = $res->headers->{'date'};
+                    if ( $m && str2time($m) >= $file->{mtime} ) {
+                        warn
+                            "skipping - upload date later than file's mtime\n";
+                        next;
+                    }
+                }
+                else {
+                    # 404 or other failure - upload the file
+                    print $res->status_line, "\n";
                 }
             }
-            else {
-                # 404 or other failure - upload the file
-                print $res->status_line, "\n";
+            $file->{upload} = 1;
+            push( @{ $task->{files} }, $file );
+        }
+
+        # if metadata update is requested, schedule a dummy file for items
+        # with zero files to upload.
+        if ( !$ignoreNofile && !grep( $_->{upload}, @{ $item->{files} } ) ) {
+            my $dummyfile = { filename => '*_meta.xml', item => $item };
+            push( @{ $task->{files} }, $dummyfile );
+        }
+    }
+
+    # then open journal file for writing (append mode).
+    open( my $jnl, '>>', $journalFile )
+        or die "cannot open a journal file: $journalFile:$!\n";
+
+    # now start actual upload tasks, doing some optimization.
+    # - items with no file to upload are not created
+    # - item creation is always combined with the first file upload
+    my @uploadQueue = @{ $task->{files} };
+    while (@uploadQueue) {
+        my $file = shift @uploadQueue;
+        my $uripath;
+
+        # file object without 'file' member instructs forced metadata update.
+        if ( !( defined $file->{file} ) ) {
+            $uripath = "/" . $file->{item}{name};
+            warn "Item: ", $uripath, "\n";
+        }
+        else {
+            $uripath = "/" . $file->{item}{name} . "/" . $file->{filename};
+            warn "File: ", $file->{file}, " -> ", $uripath, "\n";
+        }
+        my $waitUntil = $file->{waitUntil};
+        if ( defined $waitUntil ) {
+            my $sec = $waitUntil - time();
+            while ( $sec > 0 ) {
+                print STDERR "holding off $sec second",
+                    ( $sec > 1 ? 's' : '' ),
+                    "...   ";
+                sleep(1);
+                $sec--;
             }
+            continue { print STDERR "\r"; }
+            print STDERR "\n";
+            delete $file->{waitUntil};
         }
-        $file->{upload} = 1;
-        push( @{ $task->{files} }, $file );
-    }
 
-    # if metadata update is requested, schedule a dummy file for items
-    # with zero files to upload.
-    if ( !$ignoreNofile && !grep( $_->{upload}, @{ $item->{files} } ) ) {
-        my $dummyfile = { filename => '*_meta.xml', item => $item };
-        push( @{ $task->{files} }, $dummyfile );
-    }
-}
+        # ok, ready to go
+        my $item    = $file->{item};
+        my @headers = ();
 
-# then open journal file for writing (append mode).
-open( my $jnl, '>>', $journalFile )
-    or die "cannot open a journal file: $journalFile:$!\n";
-
-# now start actual upload tasks, doing some optimization.
-# - items with no file to upload are not created
-# - item creation is always combined with the first file upload
-my @uploadQueue = @{ $task->{files} };
-while (@uploadQueue) {
-    my $file = shift @uploadQueue;
-    my $uripath;
-
-    # file object without 'file' member instructs forced metadata update.
-    if ( !( defined $file->{file} ) ) {
-        $uripath = "/" . $file->{item}{name};
-        warn "Item: ", $uripath, "\n";
-    }
-    else {
-        $uripath = "/" . $file->{item}{name} . "/" . $file->{filename};
-        warn "File: ", $file->{file}, " -> ", $uripath, "\n";
-    }
-    my $waitUntil = $file->{waitUntil};
-    if ( defined $waitUntil ) {
-        my $sec = $waitUntil - time();
-        while ( $sec > 0 ) {
-            print STDERR "holding off $sec second", ( $sec > 1 ? 's' : '' ),
-                "...   ";
-            sleep(1);
-            $sec--;
-        }
-        continue { print STDERR "\r"; }
-        print STDERR "\n";
-        delete $file->{waitUntil};
-    }
-
-    # ok, ready to go
-    my $item    = $file->{item};
-    my @headers = ();
-
-    # prepare item metadata if the item hasn't been created yet (in this
-    # session) - it might exist on the server.
-    unless ( $item->{created} ) {
-        my $metadata = $item->{metadata};
-        if ( $metadataAction eq 'update' ) {
-            print STDERR "retrieving existing metadata for $item->{name}...\n"
-                if $verbose;
-            my $exmetadata = fetchMetadata( $ua, $item->{name} );
+        # prepare item metadata if the item hasn't been created yet (in this
+        # session) - it might exist on the server.
+        unless ( $item->{created} ) {
+            my $metadata = $item->{metadata};
+            if ( $metadataAction eq 'update' ) {
+                print STDERR
+                    "retrieving existing metadata for $item->{name}...\n"
+                    if $verbose;
+                my $exmetadata = fetchMetadata( $ua, $item->{name} );
 
         # crucial metadata may be lost if we proceed without fetching metadata
-            unless ( defined $exmetadata ) {
-                warn "failed to get metadata of item $item->{name}\n";
-                $file->{waitUntil} = time() + 120;
-                push( @uploadQueue, $file );
-                next;
-            }
-            unless ( $exmetadata->{server} ) {
-                print STDERR "item $item->{name} does not exist yet.\n"
-                    if $verbose;
-            }
-            $exmetadata = $exmetadata->{metadata};
-            for my $k ( ('identifier') ) {
-                delete $exmetadata->{$k};
-            }
-            for my $k ( keys %$exmetadata ) {
-                if ( unspecified( $metadata->{$k} ) ) {
-                    $metadata->{$k} = $exmetadata->{$k};
-                    print STDERR "existing metadata %k=" . $exmetadata->{$k}
-                        if $verbose > 1;
+                unless ( defined $exmetadata ) {
+                    warn "failed to get metadata of item $item->{name}\n";
+                    $file->{waitUntil} = time() + 120;
+                    push( @uploadQueue, $file );
+                    next;
+                }
+                unless ( $exmetadata->{server} ) {
+                    print STDERR "item $item->{name} does not exist yet.\n"
+                        if $verbose;
+                }
+                $exmetadata = $exmetadata->{metadata};
+                for my $k ( ('identifier') ) {
+                    delete $exmetadata->{$k};
+                }
+                for my $k ( keys %$exmetadata ) {
+                    if ( unspecified( $metadata->{$k} ) ) {
+                        $metadata->{$k} = $exmetadata->{$k};
+                        print STDERR "existing metadata %k="
+                            . $exmetadata->{$k}
+                            if $verbose > 1;
+                    }
                 }
             }
-        }
 
-        # check metadata
-        my @metaerrs = ();
-        for my $k ( ( 'mediatype', 'collection' ) ) {
-            push( @metaerrs, $k ) if unspecified( $metadata->{$k} );
-        }
-        if (@metaerrs) {
-            die "ERROR:following mandatory metadata is undefined for item '"
-                . $item->{name} . "':\n"
-                . join( '', map( "  $_\n", @metaerrs ) );
-        }
+            # check metadata
+            my @metaerrs = ();
+            for my $k ( ( 'mediatype', 'collection' ) ) {
+                push( @metaerrs, $k ) if unspecified( $metadata->{$k} );
+            }
+            if (@metaerrs) {
+                die
+                    "ERROR:following mandatory metadata is undefined for item '"
+                    . $item->{name} . "':\n"
+                    . join( '', map( "  $_\n", @metaerrs ) );
+            }
 
-        # prepare actual HTTP headers for metadata
-        push( @headers, 'x-amz-auto-make-bucket', 1 );
+            # prepare actual HTTP headers for metadata
+            push( @headers, 'x-amz-auto-make-bucket', 1 );
 
     # As metadata (most often 'collection' and 'subject') may have multiple
     # values, %metadata has an array for each metadata name (in some cases,
@@ -1066,95 +1062,102 @@ while (@uploadQueue) {
     # we use metadata header in indexed form. If there's only one value
     # (either in an array or as a scalar), we use basic form. Special metadata
     # 'collection' is also handled by this same logic.
-        while ( my ( $h, $v ) = each %$metadata ) {
-            push( @headers, metadataHeaders( $h, $v ) );
+            while ( my ( $h, $v ) = each %$metadata ) {
+                push( @headers, metadataHeaders( $h, $v ) );
+            }
+
+            # add metadata headers for collections item gets associated with
+            #my @collectionNames = map($_->{name}, @{$item->{collections}});
+            #push(@headers, metadataHeaders('collection', \@collectionNames));
+
+            # overwrite existing bucket unless user explicitly told not to.
+            unless ( $metadataAction eq 'keep' ) {
+                push( @headers, 'x-archive-ignore-preexisting-bucket', '1' );
+            }
+
+            # size-hint
+            if ( $item->{size} ) {
+                push( @headers, 'x-archive-size-hint', $item->{size} );
+            }
         }
 
-        # add metadata headers for collections item gets associated with
-        #my @collectionNames = map($_->{name}, @{$item->{collections}});
-        #push(@headers, metadataHeaders('collection', \@collectionNames));
-
-        # overwrite existing bucket unless user explicitly told not to.
-        unless ( $metadataAction eq 'keep' ) {
-            push( @headers, 'x-archive-ignore-preexisting-bucket', '1' );
+        # to reduce the workload on IA catalogue system,
+        # all file upload should have no-derive but the last one. if no-derive
+        # is specified, it goes with the last one, too.
+        # no-derive flag should go with all files
+        if ( $noDerive || !lastFile($file) ) {
+            push( @headers, 'x-archive-queue-derive', '0' );
         }
 
-        # size-hint
-        if ( $item->{size} ) {
-            push( @headers, 'x-archive-size-hint', $item->{size} );
+        # Expect header
+        push( @headers, 'Expect', '100-continue' );
+
+        my $uri     = $IAS3URLBASE . $uripath;
+        my $content = $file->{path};
+
+        if ($verbose) {
+            print STDERR "PUT $uri\n";
+            for ( my $i = 0; $i < $#headers; $i += 2 ) {
+                print STDERR $headers[$i], ":", $headers[ $i + 1 ], "\n";
+            }
         }
-    }
 
-    # to reduce the workload on IA catalogue system,
-    # all file upload should have no-derive but the last one. if no-derive
-    # is specified, it goes with the last one, too.
-    # no-derive flag should go with all files
-    if ( $noDerive || !lastFile($file) ) {
-        push( @headers, 'x-archive-queue-derive', '0' );
-    }
-
-    # Expect header
-    push( @headers, 'Expect', '100-continue' );
-
-    my $uri     = IAS3URLBASE . $uripath;
-    my $content = $file->{path};
-
-    if ($verbose) {
-        print STDERR "PUT $uri\n";
-        for ( my $i = 0; $i < $#headers; $i += 2 ) {
-            print STDERR $headers[$i], ":", $headers[ $i + 1 ], "\n";
-        }
-    }
-
-    if ($dryrun) {
-        print STDERR "## dry-run; not making actual request\n";
-        $file->{upload} = 0;
-    }
-    else {
-        # use of custom PUT_FILE is for efficient handling of large files.
-        # see comment on PUT_FILE above.
-        my $req = PUT_FILE $uri, $content, @headers;
-
-        #print STDERR $req->as_string;
-        my $res = $ua->request($req);
-        print STDERR "\n";
-        if ( $res->is_success ) {
+        if ($dryrun) {
+            print STDERR "## dry-run; not making actual request\n";
             $file->{upload} = 0;
-            print $res->status_line, "\n";
-            $res->headers->scan( sub { print "$_[0]: $_[1]\n"; } )
-                if $verbose;
-            print $res->content, "\n" if $verbose;
-            printf( $jnl "U %s %s %s %s\n",
-                uri_escape( $file->{file} ),
-                $file->{mtime},
-                $file->{item}{name},
-                uri_escape( $file->{filename} )
-            ) if $file->{file};
-            $jnl->flush();
-            print "\n";
         }
         else {
-            print $res->status_line, "\n", $res->content, "\n\n";
-            if ( $res->code == 503 ) {
+            # use of custom PUT_FILE is for efficient handling of large files.
+            # see comment on PUT_FILE above.
+            my $req = PUT_FILE $uri, $content, @headers;
 
-                # Service Unavailable - asking to slow down
-                $file->{waitUntil} = time() + 120;
-
-                # put it at the head so that it blocks transfer
-                unshift( @uploadQueue, $file );
-            }
-            elsif ( ++$file->{failCount} < 5 ) {
-                $file->{waitUntil} = time() + 120;
-                push( @uploadQueue, $file );
+            #print STDERR $req->as_string;
+            my $res = $ua->request($req);
+            print STDERR "\n";
+            if ( $res->is_success ) {
+                $file->{upload} = 0;
+                print $res->status_line, "\n";
+                $res->headers->scan( sub { print "$_[0]: $_[1]\n"; } )
+                    if $verbose;
+                print $res->content, "\n" if $verbose;
+                printf( $jnl "U %s %s %s %s\n",
+                    uri_escape( $file->{file} ),
+                    $file->{mtime},
+                    $file->{item}{name},
+                    uri_escape( $file->{filename} )
+                ) if $file->{file};
+                $jnl->flush();
+                print "\n";
             }
             else {
-                # give up
+                print $res->status_line, "\n", $res->content, "\n\n";
+                if ( $res->code == 503 ) {
+
+                    # Service Unavailable - asking to slow down
+                    $file->{waitUntil} = time() + 120;
+
+                    # put it at the head so that it blocks transfer
+                    unshift( @uploadQueue, $file );
+                }
+                elsif ( ++$file->{failCount} < 5 ) {
+                    $file->{waitUntil} = time() + 120;
+                    push( @uploadQueue, $file );
+                }
+                else {
+                    # give up
+                }
+                next;
             }
-            next;
         }
+
+        $item->{created} = 1;
     }
 
-    $item->{created} = 1;
+    close($jnl);
+
+    return;
 }
 
-close($jnl);
+main() unless caller;
+
+1;
