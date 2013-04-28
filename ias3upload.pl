@@ -18,11 +18,14 @@
 #
 use strict;
 use warnings;
+use utf8;
 use Getopt::Long;
 use Encode;
 use English;
 use IO::File;
 use File::Spec;
+use Pod::Usage qw( pod2usage );
+use JSON::PP;
 
 use LWP::UserAgent;
 use HTTP::Date qw(str2time);
@@ -181,77 +184,6 @@ sub escapeText {
     $_[0];
 }
 
-# simple-minded JSON parser. note $_[0] is modified.
-sub parseJSON {
-    no strict 'vars';
-    local *json = \$_[0];
-    $json =~ s/^\s+//;
-    if ( $json =~ s/^\{// ) {
-        my %d;
-        unless ( $json =~ s/^\s*}// ) {
-            while (1) {
-
-                # assumes no \-escape in keys
-                $json =~ s/^\s*\"([^"]*)\"\s*://
-                    or die "JSON key syntax error: $json";
-                my $k = $1;
-                my $v = parseJSON($json);
-                $d{$k} = $v;
-                last if $json =~ s/^\s*\}//;
-                $json =~ s/^\s*,// or die "comma is expected: $json";
-            }
-        }
-        return \%d;
-    }
-    elsif ( $json =~ s/^\s*\[// ) {
-        my @a;
-        unless ( $json =~ s/^\s*\]// ) {
-            while (1) {
-                my $v = parseJSON($json);
-                push( @a, $v );
-                last if $json =~ s/^\s*\]//;
-                $json =~ s/^\s*,// or die "comma is expected: $json";
-            }
-        }
-        return \@a;
-    }
-    elsif ( $json =~ s/^\"// ) {
-        my $v = "";
-        while (1) {
-            $json =~ s/^[^\\"]*//;
-            $v .= $&;
-            if ( $json =~ s/^\\u([0-9a-fA-F]{4})// ) {
-                $v .= chr( hex($1) );
-            }
-            elsif ( $json =~ s/^\\x([0-9a-fA-F]{2})// ) {
-                $v .= chr( hex($1) );
-            }
-            elsif ( $json =~ s/^\\(.)// ) {
-                if   ( $1 eq 't' ) { $v .= "\t"; }
-                else               { $v .= $1; }
-            }
-            else {
-                $json =~ s/^"// or die "unterminated string at $json";
-                last;
-            }
-        }
-        return $v;
-    }
-    elsif ( $json =~ s/^[+-]?(\d+(\.\d*)?|\.\d+)// ) {
-        my $v = $&;
-        return $v;
-    }
-    elsif ( $json =~ s/^(null|false)// ) {
-        return;
-    }
-    elsif ( $json =~ s/^true// ) {
-        return 1;
-    }
-    else {
-        die "JSON syntax error: $json";
-    }
-}
-
 sub fetchMetadata {
     my $ua       = shift;
     my $itemname = shift;
@@ -265,9 +197,8 @@ sub fetchMetadata {
         my $json = $res->content;
 
         #print STDERR "META:".$json."\n";
-        my $data = parseJSON($json);
+        my $data = decode_json($json);
 
-        show $data;
         unless ( defined $data ) {
 
             # item does not exist - this is not an error.
@@ -517,11 +448,23 @@ sub unspecified {
     return !defined($v) || $v eq '' || ref $v eq 'ARRAY' && $#$v == -1;
 }
 
+sub no_keys {
+    print "ERROR:\nI need your IAS3 key pair for calling IAS3 API. "
+        . "Please supply it by one of following methods:\n\n"
+        . "1) add command line option \"-k <access_key>:<secret_key>\",\n"
+        . "2) set <access_key>:<secret_key> to environment variable '"
+        . "$ENV_AUTHKEYS',\n"
+        . "3) create a file '.ias3cfg' in your home directory with your access_key and\n"
+        . "   secret_key parameters in it (run '$0 --init' to create it\n"
+        . "   interactively)\n\n"
+        . "You can get your IAS3 keys at http://www.archive.org/account/s3.php (login required)\n";
+    exit;
+}
+
 sub main {
 
     # controls
-    my $help_and_exit = 0;
-    my $initConfig    = 0;
+    my $initConfig = 0;
 
     # no actual upload
     my $dryrun = 0;
@@ -576,8 +519,8 @@ sub main {
             ;    # IAS3 config file, in the same format
     }
 
-    if ( exists $ENV{ ENV_AUTHKEYS() } ) {
-        my $keys = $ENV{ ENV_AUTHKEYS() };
+    if ( exists $ENV{$ENV_AUTHKEYS} ) {
+        my $keys = $ENV{$ENV_AUTHKEYS};
         unless ( $keys =~ /^[A-Za-z0-9]+:[A-Za-z0-9]+$/ ) {
             warn "WARNING:", $ENV_AUTHKEYS,
                 " should be in format ACCESSKEY:SECRETKEY (ignored)\n";
@@ -587,14 +530,18 @@ sub main {
         }
     }
 
-    GetOptions(
-        'h'   => \$help_and_exit,
-        'n'   => \$dryrun,
-        'v+'  => \$verbose,
-        'f'   => \$forceupload,
-        'm'   => \$checkstore,
-        'l=s' => \$metatbl,
-        'k=s' => \$ias3keys,
+    my $parser      = Getopt::Long::Parser->new();
+    my $cli_options = {
+        'h|help|?' => sub { pod2usage( -verbose => 1 ) },
+        'man'      => sub { pod2usage( -verbose => 2 ) },
+        'usage'    => sub { pod2usage( -verbose => 0 ) },
+        'version' => sub { print "version: $VERSION\n"; exit 1; },
+        'n'       => \$dryrun,
+        'v+'      => \$verbose,
+        'f'       => \$forceupload,
+        'm'       => \$checkstore,
+        'l=s'     => \$metatbl,
+        'k=s'     => \$ias3keys,
         'c=s' => \$metadefaults{'collection'},
         'i=s' => \$metadefaults{'item'},
 
@@ -614,28 +561,9 @@ sub main {
         # not yet supported control options
         'keep-old'       => \$keepOldVersion,
         'cascade-delete' => \$cascadeDelete,
-    );
-    if ($help_and_exit) {
-        print STDERR <<"EOH";
-$0 [OPTIONS]
-options:
-    -h \tshow this help message and exit.
-    -l METADATA.CSV use specified file as upload description 
-      \t\t(default ./metadata.csv)
-    -n\t\tsimulate upload process, but don't actually upload files.
-    -f\t\tupload all files ignoring upload history.
-    -m\t\tquery storage server to confirm the file being uploaded is
-      \t\tin fact a new file (can be slow).
-    -c COLLECTIONS\tdefault collection.
-    -i ITEMID\tdefault item name.
-    --keep-metadata\tkeep existing metadata (metadata ignored for existing items).
-    --replace-metadata\treplace entire metadata with what's given.
-    --no-derive\tdo not trigger derive.
-    --init\tcreate ~/.ias3cfg file by fetching credentials from IA web.
-    -v\t\tprint extra trace output.
-EOH
-        exit(0);
-    }
+    };
+
+    $parser->getoptions( %{$cli_options} ) or die "Incorrect usage.\n";
 
     # check for incompatible option combinations
     #if ($keepExistingMetadata && $forceMetadataUpdate) {
@@ -648,16 +576,7 @@ EOH
     }
 
     unless ( defined $ias3keys ) {
-        die "ERROR:"
-            . "I need your IAS3 key pair for calling IAS3 API. "
-            . "Please supply it by one of following methods:\n\n"
-            . "1) add command line option \"-k <access_key>:<secret_key>\",\n"
-            . "2) set <access_key>:<secret_key> to environment variable '"
-            . "$ENV_AUTHKEYS',\n"
-            . "3) create a file '.ias3cfg' in your home directory with your access_key and\n"
-            . "   secret_key parameters in it (run '$0 --init' to create it\n"
-            . "   interactively)\n\n"
-            . "You can get your IAS3 keys at http://www.archive.org/account/s3.php (login required)\n";
+        no_keys();
     }
     unless ( $ias3keys =~ /^[A-Za-z0-9]+:[A-Za-z0-9]+$/ ) {
         die "ERROR:keys must be in format ACCESSKEY:SECRETKEY\n";
@@ -1161,3 +1080,35 @@ EOH
 main() unless caller;
 
 1;
+
+__END__
+
+#-----------------------------------------------------------------------------
+
+=pod
+
+=encoding utf8
+
+=head1 USAGE
+
+ias3upload.pl [OPTIONS]
+
+options:
+    -h    show this help message and exit.
+    -l    METADATA.CSV use specified file as upload description 
+          (default ./metadata.csv)
+    -n    simulate upload process, but don't actually upload files.
+    -f    upload all files ignoring upload history.
+    -m    query storage server to confirm the file being uploaded is
+          in fact a new file (can be slow).
+    -c COLLECTIONS  default collection.
+    -i ITEMID   default item name.
+    --keep-metadata keep existing metadata (metadata ignored for existing items).
+    --replace-metadata  replace entire metadata with what's given.
+    --no-derive do not trigger derive.
+    --init  create ~/.ias3cfg file by fetching credentials from IA web.
+    -v    print extra trace output.
+
+
+=cut
+
