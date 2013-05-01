@@ -4,6 +4,10 @@ The IAS3 Bulk Uploader is a Perl script that automates uploading multiple files 
 
 The intended users of this script are Internet Archive users interested in uploading batches of content alongside per-item metadata in an automated fashion. The user _should_ have a collection registered with the Internet Archive. Please [contact Internet Archive](mailto:info@archive.org?subject=[Collection Creation Request]) if you need a collection created.
 
+## Install prerequisites
+
+    cpan JSON::PP LWP::UserAgent HTTP::Date URI::Escape File::HomeDir Readonly
+
 ## Bulk Uploading With ias3upload.pl
 
 ### Prepare your Metadata
