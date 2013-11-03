@@ -1,4 +1,4 @@
-#!/usr/bin/env perl
+#!/usr/bin/perl
 #
 # ias3upload.pl - simple script for bulk-uploading to Internet Archive.
 # Copyright (C) 2013  Kenji Nagahashi <kenji@archive.org>
@@ -16,9 +16,9 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
+use utf8;
 use strict;
 use warnings;
-use utf8;
 use Getopt::Long;
 use Encode;
 use English;
@@ -31,7 +31,6 @@ use LWP::UserAgent;
 use HTTP::Date qw(str2time);
 use URI::Escape;
 use File::HomeDir;
-use Data::Show;
 use Readonly;
 
 Readonly::Scalar my $IAS3URLBASE   => 'http://s3.us.archive.org';
@@ -42,7 +41,7 @@ Readonly::Scalar my $META_XML      => '_meta.xml';
 Readonly::Scalar my $ENV_AUTHKEYS => 'IAS3KEYS';
 Readonly::Scalar my $VERSION      => '0.7.6';
 
-Readonly::Scalar my $UPLOADJOURNAL => 'ias3upload.jnl';
+Readonly::Scalar my $UPLOAD_LOG => 'ias3upload.log';
 
 my $inencoding  = 'UTF-8';
 my $outencoding = 'UTF-8';
@@ -448,19 +447,6 @@ sub unspecified {
     return !defined($v) || $v eq '' || ref $v eq 'ARRAY' && $#$v == -1;
 }
 
-sub no_keys {
-    print "ERROR:\nI need your IAS3 key pair for calling IAS3 API. "
-        . "Please supply it by one of following methods:\n\n"
-        . "1) add command line option \"-k <access_key>:<secret_key>\",\n"
-        . "2) set <access_key>:<secret_key> to environment variable '"
-        . "$ENV_AUTHKEYS',\n"
-        . "3) create a file '.ias3cfg' in your home directory with your access_key and\n"
-        . "   secret_key parameters in it (run '$0 --init' to create it\n"
-        . "   interactively)\n\n"
-        . "You can get your IAS3 keys at http://www.archive.org/account/s3.php (login required)\n";
-    exit;
-}
-
 sub main {
 
     # controls
@@ -505,13 +491,6 @@ sub main {
 
     my $homedir = $ENV{'HOME'};
     $homedir =~ s![^/]$!$&/!;    # ensure $homedir has trailing slash
-
-    # IAS3 auth keys are taken from three locations
-    # (from lowest to highest priority):
-    # 1) {access,secret}_key parameters in $HOME/.s3cfg
-    # 2) {access,secret}_key parameters in $HOME/.ias3cfg
-    # 3) IAS3KEYS environment variable
-    # 4) -k command line option
 
     if ($homedir) {
         readConfig( $homedir . ".s3cfg" );    # config file for s3cmd
@@ -576,7 +555,7 @@ sub main {
     }
 
     unless ( defined $ias3keys ) {
-        no_keys();
+        pod2usage( -verbose => 99, -sections => 'AUTHENTICATION', );
     }
     unless ( $ias3keys =~ /^[A-Za-z0-9]+:[A-Za-z0-9]+$/ ) {
         die "ERROR:keys must be in format ACCESSKEY:SECRETKEY\n";
@@ -798,8 +777,8 @@ sub main {
         }
     }
 
-    # read journal file left by previous upload
-    my $journalFile = resolvePath( $UPLOADJOURNAL, $metatbl );
+    # read previous upload log
+    my $journalFile = resolvePath( $UPLOAD_LOG, $metatbl );
     if ( open( my $rjnl, '<', $journalFile ) ) {
         my %fileidx;
         foreach my $item ( values %{ $task->{items} } ) {
@@ -1095,7 +1074,7 @@ ias3upload.pl [OPTIONS]
 
 options:
     -h    show this help message and exit.
-    -l    METADATA.CSV use specified file as upload description 
+    -l    METADATA.CSV use specified file as upload description
           (default ./metadata.csv)
     -n    simulate upload process, but don't actually upload files.
     -f    upload all files ignoring upload history.
@@ -1108,6 +1087,28 @@ options:
     --no-derive do not trigger derive.
     --init  create ~/.ias3cfg file by fetching credentials from IA web.
     -v    print extra trace output.
+
+=head1 CONFIG FILES
+
+IAS3 auth keys are looked for in the following locations
+(from lowest to highest priority):
+    1) {access,secret}_key parameters in $HOME/.s3cfg
+    2) {access,secret}_key parameters in $HOME/.ias3cfg
+    3) IAS3KEYS environment variable
+    4) -k command line option
+
+=head1 AUTHENTICATION
+
+I need your IAS3 key pair for calling IAS3 API. Please supply it via one
+of following methods:
+
+  1) add this command line option "-k <access_key>:<secret_key>"
+  2) set <access_key>:<secret_key> to environment variable '$ENV_AUTHKEYS'
+  3) create a file '.ias3cfg' in your home directory with your access_key and
+  secret_key parameters in it (run '$0 --init' to create it interactively)
+
+You can get your IAS3 keys by logging into http://archive.org and going to
+http://www.archive.org/account/s3.php
 
 
 =cut
