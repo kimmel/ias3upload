@@ -474,11 +474,6 @@ sub main {
 # 'replace': wipe out existing metadata and set what's specified in metadata.csv
 #   anew.
     my $metadataAction = 'update';
-
-  # don't update metadata of existing items (in fact it is the default
-  # behavior of IAS3. I made 'override-mode' default because it matches user's
-  # expectation.)
-  #my $keepExistingMetadata = 0;
     my $noDerive = 0;
 
     #my $forceMetadataUpdate = 0;
@@ -543,11 +538,6 @@ sub main {
 
     $parser->getoptions( %{$cli_options} ) or die "Incorrect usage.\n";
 
-    # check for incompatible option combinations
-    #if ($keepExistingMetadata && $forceMetadataUpdate) {
-    #    die "conflicting options: --update-metadata and ".
-    #	"--keep-existing-metadata";
-    #}
     if ($initConfig) {
         initConfig($homedir);
         exit 0;
