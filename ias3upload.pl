@@ -192,24 +192,23 @@ sub fetchMetadata {
     my $res = $ua->get( $IAMETAURLBASE . '/' . $itemname );
     if ( $res->is_success ) {
 
-        # TODO JSON parse error handling
         my $json = $res->content;
 
         #print STDERR "META:".$json."\n";
-        my $data = decode_json($json);
+        my $metadata = decode_json($json);
 
-        unless ( defined $data ) {
+        unless ( defined $metadata ) {
 
             # item does not exist - this is not an error.
             return {
-                server   => undef,
-                dir      => undef,
-                files    => undef,
-                created  => undef,
-                metadata => {}
+                'server'   => undef,
+                'dir'      => undef,
+                'files'    => undef,
+                'created'  => undef,
+                'metadata' => {}
             };
         }
-        return $data;
+        return $metadata;
     }
     else {
         return;
@@ -330,10 +329,10 @@ sub getKeysFromWeb {
     $ua->get('http://www.archive.org/account/login.php');
     $res = $ua->post(
         'http://www.archive.org/account/login.php',
-        {   username => $username,
-            password => $password,
-            remember => 'CHECKED',
-            submit   => 1
+        {   'username' => $username,
+            'password' => $password,
+            'remember' => 'CHECKED',
+            'submit'   => 1
         }
     );
     my $loginpage = $res->content;
@@ -432,12 +431,12 @@ sub metadataHeaders {
 # is this the last file to upload in its item?
 sub lastFile {
     my $file = shift;
-    my $item = $file->{item};
+    my $item = $file->{'item'};
     my $c    = 0;
-    foreach my $f ( @{ $item->{files} } ) {
-        $c++ if $f->{upload};
+    foreach my $f ( @{ $item->{'files'} } ) {
+        $c++ if $f->{'upload'};
     }
-    print STDERR "$c file(s) to upload in ", $item->{name}, "\n";
+    print STDERR "$c file(s) to upload in ", $item->{'name'}, "\n";
     return $c == 1;
 }
 
@@ -511,9 +510,9 @@ sub main {
 
     my $parser      = Getopt::Long::Parser->new();
     my $cli_options = {
-        'h|help|?' => sub { pod2usage( -verbose => 1 ) },
-        'man'      => sub { pod2usage( -verbose => 2 ) },
-        'usage'    => sub { pod2usage( -verbose => 0 ) },
+        'h|help|?' => sub { pod2usage( 'verbose' => 1 ) },
+        'man'      => sub { pod2usage( 'verbose' => 2 ) },
+        'usage'    => sub { pod2usage( 'verbose' => 0 ) },
         'version' => sub { print "version: $VERSION\n"; exit 1; },
         'n'       => \$dryrun,
         'v+'      => \$verbose,
@@ -551,11 +550,11 @@ sub main {
     #}
     if ($initConfig) {
         initConfig($homedir);
-        exit(0);
+        exit 0;
     }
 
     unless ( defined $ias3keys ) {
-        pod2usage( -verbose => 99, -sections => 'AUTHENTICATION', );
+        pod2usage( 'verbose' => 99, 'sections' => 'AUTHENTICATION', );
     }
     unless ( $ias3keys =~ /^[A-Za-z0-9]+:[A-Za-z0-9]+$/ ) {
         die "ERROR:keys must be in format ACCESSKEY:SECRETKEY\n";
@@ -575,8 +574,8 @@ sub main {
         die "cannot open $metatbl: $!\n";
     }
     my $task = {
-        items => {},
-        files => []
+        'items' => {},
+        'files' => []
     };
 
     # keep change to $/ local
@@ -649,11 +648,11 @@ sub main {
         # similarly for $curItem
         if ( $metadefaults{'item'} ) {
             $curItem = {
-                name     => $metadefaults{'item'},
-                metadata => {},
-                files    => []
+                'name'     => $metadefaults{'item'},
+                'metadata' => {},
+                'files'    => []
             };
-            $task->{items}{ $curItem->{name} } = $curItem;
+            $task->{'items'}{ $curItem->{'name'} } = $curItem;
         }
 
         # read body rows
@@ -678,14 +677,14 @@ sub main {
 
             my $itemName
                 = ( defined $colidx{'item'} ) && $fields[ $colidx{'item'} ]
-                || $curItem->{name};
+                || $curItem->{'name'};
             unless ($itemName) {
                 die "item identifier is unknown at $metatbl:$.\n";
             }
-            my $item = ( $task->{items}{$itemName}
-                    ||= { name => $itemName, metadata => {}, files => [] } );
+            my $item = ( $task->{'items'}{$itemName}
+                    ||= { 'name' => $itemName, 'metadata' => {}, 'files' => [] } );
 
-            $item->{metadata}{collection} = $collections;
+            $item->{'metadata'}{'collection'} = $collections;
 
             #$item->{collections} = \@collections;
 
@@ -720,14 +719,14 @@ sub main {
                     die "stat failed on $path: $!\n";
                 }
                 my $fileobj = {
-                    file     => $file,
-                    path     => $path,
-                    filename => $filename,
-                    item     => $item,
-                    size     => $st[7],
-                    mtime    => $st[9]
+                    'file'     => $file,
+                    'path'     => $path,
+                    'filename' => $filename,
+                    'item'     => $item,
+                    'size'     => $st[7],
+                    'mtime'    => $st[9]
                 };
-                push( @{ $item->{files} }, $fileobj );
+                push( @{ $item->{'files'} }, $fileobj );
             }
 
     # add metadata to item. As currently only items get metadata, it's simple.
@@ -756,12 +755,12 @@ sub main {
         # (also metadata index would be different from those user specified in
         # metadata.csv). we'd need to change this behavior if users want to
         # enforce order with indexes.
-                push( @{ $item->{metadata}{$fn} }, $fields[$i] )
+                push( @{ $item->{'metadata'}{$fn} }, $fields[$i] )
                     if $fields[$i] ne '';
             }
 
             # use item identifier as title if unspecified
-            $item->{'title'} ||= $item->{name};
+            $item->{'title'} ||= $item->{'name'};
 
             $curItem        = $item;
             $curCollections = $collections;
@@ -771,9 +770,9 @@ sub main {
     $mt->close();
 
     # calculate total upload size for each item, for size-hint
-    foreach my $item ( values %{ $task->{items} } ) {
-        foreach my $file ( @{ $item->{items} } ) {
-            $item->{size} += $file->{size};
+    foreach my $item ( values %{ $task->{'items'} } ) {
+        foreach my $file ( @{ $item->{'items'} } ) {
+            $item->{'size'} += $file->{'size'};
         }
     }
 
@@ -781,9 +780,9 @@ sub main {
     my $journalFile = resolvePath( $UPLOAD_LOG, $metatbl );
     if ( open( my $rjnl, '<', $journalFile ) ) {
         my %fileidx;
-        foreach my $item ( values %{ $task->{items} } ) {
-            foreach my $file ( @{ $item->{files} } ) {
-                $fileidx{ $file->{file} } = $file;
+        foreach my $item ( values %{ $task->{'items'} } ) {
+            foreach my $file ( @{ $item->{'files'} } ) {
+                $fileidx{ $file->{'file'} } = $file;
             }
         }
         while ( $_ = <$rjnl> ) {
@@ -794,10 +793,10 @@ sub main {
                 $file     = uri_unescape($file);
                 $filename = uri_unescape($filename);
                 if ( exists $fileidx{$file} ) {
-                    $fileidx{$file}->{uploaded} = {
-                        mtime    => $mtime,
-                        itemName => $itemName,
-                        filename => $filename
+                    $fileidx{$file}->{'uploaded'} = {
+                        'mtime'    => $mtime,
+                        'itemName' => $itemName,
+                        'filename' => $filename
                     };
                 }
             }
@@ -815,19 +814,19 @@ sub main {
     #$ua->default_headers->push_header('x-amz-auto-make-bucket'=>'1');
 
     # collect files to upload
-    foreach my $item ( values %{ $task->{items} } ) {
-        foreach my $file ( @{ $item->{files} } ) {
-            my $uripath = "/" . $file->{item}{name} . "/" . $file->{filename};
+    foreach my $item ( values %{ $task->{'items'} } ) {
+        foreach my $file ( @{ $item->{'files'} } ) {
+            my $uripath = "/" . $file->{'item'}{'name'} . "/" . $file->{'filename'};
             if ( !$forceupload ) {
-                if ( my $last = $file->{uploaded} ) {
+                if ( my $last = $file->{'uploaded'} ) {
 
               # this file was uploaded in previous run. re-upload it only when
               # something has changed.
-                    if (   $file->{mtime} <= $last->{mtime}
-                        && $file->{item}{name} eq $last->{itemName}
-                        && $file->{filename} eq $last->{filename} )
+                    if (   $file->{'mtime'} <= $last->{'mtime'}
+                        && $file->{'item'}{'name'} eq $last->{'itemName'}
+                        && $file->{'filename'} eq $last->{'filename'} )
                     {
-                        warn "File: ", $file->{file},
+                        warn "File: ", $file->{'file'},
                             ": skipping - no change since last upload\n";
                         next;
                     }
@@ -841,7 +840,7 @@ sub main {
 
               # file exists - check date (of last upload) against file's mtime
                     my $m = $res->headers->{'date'};
-                    if ( $m && str2time($m) >= $file->{mtime} ) {
+                    if ( $m && str2time($m) >= $file->{'mtime'} ) {
                         warn
                             "skipping - upload date later than file's mtime\n";
                         next;
@@ -852,15 +851,15 @@ sub main {
                     print $res->status_line, "\n";
                 }
             }
-            $file->{upload} = 1;
-            push( @{ $task->{files} }, $file );
+            $file->{'upload'} = 1;
+            push( @{ $task->{'files'} }, $file );
         }
 
         # if metadata update is requested, schedule a dummy file for items
         # with zero files to upload.
-        if ( !$ignoreNofile && !grep( $_->{upload}, @{ $item->{files} } ) ) {
-            my $dummyfile = { filename => '*_meta.xml', item => $item };
-            push( @{ $task->{files} }, $dummyfile );
+        if ( !$ignoreNofile && !grep( $_->{'upload'}, @{ $item->{'files'} } ) ) {
+            my $dummyfile = { 'filename' => '*_meta.xml', 'item' => $item };
+            push( @{ $task->{'files'} }, $dummyfile );
         }
     }
 
@@ -871,21 +870,21 @@ sub main {
     # now start actual upload tasks, doing some optimization.
     # - items with no file to upload are not created
     # - item creation is always combined with the first file upload
-    my @uploadQueue = @{ $task->{files} };
+    my @uploadQueue = @{ $task->{'files'} };
     while (@uploadQueue) {
         my $file = shift @uploadQueue;
         my $uripath;
 
         # file object without 'file' member instructs forced metadata update.
-        if ( !( defined $file->{file} ) ) {
-            $uripath = "/" . $file->{item}{name};
+        if ( !( defined $file->{'file'} ) ) {
+            $uripath = "/" . $file->{'item'}{'name'};
             warn "Item: ", $uripath, "\n";
         }
         else {
-            $uripath = "/" . $file->{item}{name} . "/" . $file->{filename};
-            warn "File: ", $file->{file}, " -> ", $uripath, "\n";
+            $uripath = "/" . $file->{'item'}{'name'} . "/" . $file->{'filename'};
+            warn "File: ", $file->{'file'}, " -> ", $uripath, "\n";
         }
-        my $waitUntil = $file->{waitUntil};
+        my $waitUntil = $file->{'waitUntil'};
         if ( defined $waitUntil ) {
             my $sec = $waitUntil - time();
             while ( $sec > 0 ) {
@@ -897,35 +896,35 @@ sub main {
             }
             continue { print STDERR "\r"; }
             print STDERR "\n";
-            delete $file->{waitUntil};
+            delete $file->{'waitUntil'};
         }
 
         # ok, ready to go
-        my $item    = $file->{item};
+        my $item    = $file->{'item'};
         my @headers = ();
 
         # prepare item metadata if the item hasn't been created yet (in this
         # session) - it might exist on the server.
-        unless ( $item->{created} ) {
-            my $metadata = $item->{metadata};
+        unless ( $item->{'created'} ) {
+            my $metadata = $item->{'metadata'};
             if ( $metadataAction eq 'update' ) {
                 print STDERR
-                    "retrieving existing metadata for $item->{name}...\n"
+                    "retrieving existing metadata for $item->{'name'}...\n"
                     if $verbose;
-                my $exmetadata = fetchMetadata( $ua, $item->{name} );
+                my $exmetadata = fetchMetadata( $ua, $item->{'name'} );
 
         # crucial metadata may be lost if we proceed without fetching metadata
                 unless ( defined $exmetadata ) {
-                    warn "failed to get metadata of item $item->{name}\n";
-                    $file->{waitUntil} = time() + 120;
+                    warn "failed to get metadata of item $item->{'name'}\n";
+                    $file->{'waitUntil'} = time() + 120;
                     push( @uploadQueue, $file );
                     next;
                 }
-                unless ( $exmetadata->{server} ) {
-                    print STDERR "item $item->{name} does not exist yet.\n"
+                unless ( $exmetadata->{'server'} ) {
+                    print STDERR "item $item->{'name'} does not exist yet.\n"
                         if $verbose;
                 }
-                $exmetadata = $exmetadata->{metadata};
+                $exmetadata = $exmetadata->{'metadata'};
                 for my $k ( ('identifier') ) {
                     delete $exmetadata->{$k};
                 }
@@ -947,7 +946,7 @@ sub main {
             if (@metaerrs) {
                 die
                     "ERROR:following mandatory metadata is undefined for item '"
-                    . $item->{name} . "':\n"
+                    . $item->{'name'} . "':\n"
                     . join( '', map( "  $_\n", @metaerrs ) );
             }
 
@@ -965,7 +964,7 @@ sub main {
             }
 
             # add metadata headers for collections item gets associated with
-            #my @collectionNames = map($_->{name}, @{$item->{collections}});
+            #my @collectionNames = map($_->{'name'}, @{$item->{collections}});
             #push(@headers, metadataHeaders('collection', \@collectionNames));
 
             # overwrite existing bucket unless user explicitly told not to.
@@ -974,8 +973,8 @@ sub main {
             }
 
             # size-hint
-            if ( $item->{size} ) {
-                push( @headers, 'x-archive-size-hint', $item->{size} );
+            if ( $item->{'size'} ) {
+                push( @headers, 'x-archive-size-hint', $item->{'size'} );
             }
         }
 
@@ -991,7 +990,7 @@ sub main {
         push( @headers, 'Expect', '100-continue' );
 
         my $uri     = $IAS3URLBASE . $uripath;
-        my $content = $file->{path};
+        my $content = $file->{'path'};
 
         if ($verbose) {
             print STDERR "PUT $uri\n";
@@ -1002,7 +1001,7 @@ sub main {
 
         if ($dryrun) {
             print STDERR "## dry-run; not making actual request\n";
-            $file->{upload} = 0;
+            $file->{'upload'} = 0;
         }
         else {
             # use of custom PUT_FILE is for efficient handling of large files.
@@ -1013,17 +1012,17 @@ sub main {
             my $res = $ua->request($req);
             print STDERR "\n";
             if ( $res->is_success ) {
-                $file->{upload} = 0;
+                $file->{'upload'} = 0;
                 print $res->status_line, "\n";
                 $res->headers->scan( sub { print "$_[0]: $_[1]\n"; } )
                     if $verbose;
                 print $res->content, "\n" if $verbose;
                 printf( $jnl "U %s %s %s %s\n",
-                    uri_escape( $file->{file} ),
-                    $file->{mtime},
-                    $file->{item}{name},
-                    uri_escape( $file->{filename} )
-                ) if $file->{file};
+                    uri_escape( $file->{'file'} ),
+                    $file->{'mtime'},
+                    $file->{'item'}{'name'},
+                    uri_escape( $file->{'filename'} )
+                ) if $file->{'file'};
                 $jnl->flush();
                 print "\n";
             }
@@ -1032,13 +1031,13 @@ sub main {
                 if ( $res->code == 503 ) {
 
                     # Service Unavailable - asking to slow down
-                    $file->{waitUntil} = time() + 120;
+                    $file->{'waitUntil'} = time() + 120;
 
                     # put it at the head so that it blocks transfer
                     unshift( @uploadQueue, $file );
                 }
-                elsif ( ++$file->{failCount} < 5 ) {
-                    $file->{waitUntil} = time() + 120;
+                elsif ( ++$file->{'failCount'} < 5 ) {
+                    $file->{'waitUntil'} = time() + 120;
                     push( @uploadQueue, $file );
                 }
                 else {
@@ -1048,7 +1047,7 @@ sub main {
             }
         }
 
-        $item->{created} = 1;
+        $item->{'created'} = 1;
     }
 
     close($jnl);
