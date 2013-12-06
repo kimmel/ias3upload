@@ -33,7 +33,7 @@ use URI::Escape;
 use File::HomeDir;
 use Readonly;
 
-Readonly::Scalar my $IAS3_URL_BASE   => 'http://s3.us.archive.org';
+Readonly::Scalar my $IAS3_URL_BASE => 'http://s3.us.archive.org';
 Readonly::Scalar my $IADLURLBASE   => 'http://www.archive.org/download';
 Readonly::Scalar my $IAMETAURLBASE => 'http://www.archive.org/metadata';
 
@@ -45,16 +45,6 @@ Readonly::Scalar my $UPLOAD_LOG => 'ias3upload.log';
 my $inencoding  = 'UTF-8';
 my $outencoding = 'UTF-8';
 my $ias3keys;
-
-sub resolvePath {
-    my $rpath = shift;
-    my $base  = shift;
-
-    # it seems I can't simply say File::Spec->rel2abs($rpath, $base).
-    # File::Spec->rel2abs() requires directly as second argument.
-    my $dir = File::Spec->catpath( ( File::Spec->splitpath($base) )[ 0, 1 ] );
-    return File::Spec->rel2abs( $rpath, $dir );
-}
 
 sub readCSVRow {
     my $fh      = shift;
@@ -122,6 +112,16 @@ sub splitCSV {
     }
     push( @fields, join( '', @v ) );
     return ( \@fields, $inquote );
+}
+
+sub resolvePath {
+    my $rpath = shift;
+    my $base  = shift;
+
+    # it seems I can't simply say File::Spec->rel2abs($rpath, $base).
+    # File::Spec->rel2abs() requires directly as second argument.
+    my $dir = File::Spec->catpath( ( File::Spec->splitpath($base) )[ 0, 1 ] );
+    return File::Spec->rel2abs( $rpath, $dir );
 }
 
 # variant of HTTP::Request::Common->PUT that handles upload of large file
@@ -473,7 +473,7 @@ sub main {
 # 'replace': wipe out existing metadata and set what's specified in metadata.csv
 #   anew.
     my $metadataAction = 'update';
-    my $noDerive = 0;
+    my $noDerive       = 0;
 
     #my $forceMetadataUpdate = 0;
     my $ignoreNofile = 0;
@@ -484,8 +484,6 @@ sub main {
 
     my $homedir = $ENV{'HOME'};
     $homedir =~ s![^/]$!$&/!;    # ensure $homedir has trailing slash
-
-
 
     if ($homedir) {
         readConfig( $homedir . ".s3cfg" );    # config file for s3cmd
@@ -537,6 +535,7 @@ sub main {
         'cascade-delete' => \$cascadeDelete,
     };
 
+    $parser->configure( 'bundling', 'no_ignore_case', );
     $parser->getoptions( %{$cli_options} ) or die "Incorrect usage.\n";
 
     if ($initConfig) {
@@ -560,7 +559,7 @@ sub main {
     }
 
     # entire metatbl is read into memory before starting upload.
-    my $mt = new IO::File;
+    my $mt = IO::File->new;
     unless ( $mt->open($metatbl) ) {
         die "cannot open $metatbl: $!\n";
     }
@@ -672,8 +671,10 @@ sub main {
             unless ($itemName) {
                 die "item identifier is unknown at $metatbl:$.\n";
             }
-            my $item = ( $task->{'items'}{$itemName}
-                    ||= { 'name' => $itemName, 'metadata' => {}, 'files' => [] } );
+            my $item
+                = ( $task->{'items'}{$itemName}
+                    ||= { 'name' => $itemName, 'metadata' => {},
+                    'files' => [] } );
 
             $item->{'metadata'}{'collection'} = $collections;
 
@@ -807,7 +808,8 @@ sub main {
     # collect files to upload
     foreach my $item ( values %{ $task->{'items'} } ) {
         foreach my $file ( @{ $item->{'files'} } ) {
-            my $uripath = "/" . $file->{'item'}{'name'} . "/" . $file->{'filename'};
+            my $uripath
+                = "/" . $file->{'item'}{'name'} . "/" . $file->{'filename'};
             if ( !$forceupload ) {
                 if ( my $last = $file->{'uploaded'} ) {
 
@@ -848,7 +850,9 @@ sub main {
 
         # if metadata update is requested, schedule a dummy file for items
         # with zero files to upload.
-        if ( !$ignoreNofile && !grep( $_->{'upload'}, @{ $item->{'files'} } ) ) {
+        if (   !$ignoreNofile
+            && !grep( $_->{'upload'}, @{ $item->{'files'} } ) )
+        {
             my $dummyfile = { 'filename' => '*_meta.xml', 'item' => $item };
             push( @{ $task->{'files'} }, $dummyfile );
         }
@@ -872,7 +876,8 @@ sub main {
             warn "Item: ", $uripath, "\n";
         }
         else {
-            $uripath = "/" . $file->{'item'}{'name'} . "/" . $file->{'filename'};
+            $uripath
+                = "/" . $file->{'item'}{'name'} . "/" . $file->{'filename'};
             warn "File: ", $file->{'file'}, " -> ", $uripath, "\n";
         }
         my $waitUntil = $file->{'waitUntil'};
