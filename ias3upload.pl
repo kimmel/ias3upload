@@ -19,7 +19,7 @@
 use utf8;
 use strict;
 use warnings;
-use Getopt::Long;
+use Getopt::Long ();
 use Encode;
 use English;
 use IO::File;
@@ -28,15 +28,14 @@ use Pod::Usage qw( pod2usage );
 use JSON::PP;
 
 use LWP::UserAgent;
-use HTTP::Date qw(str2time);
+use HTTP::Date qw( str2time );
 use URI::Escape;
 use File::HomeDir;
 use Readonly;
 
-Readonly::Scalar my $IAS3URLBASE   => 'http://s3.us.archive.org';
+Readonly::Scalar my $IAS3_URL_BASE   => 'http://s3.us.archive.org';
 Readonly::Scalar my $IADLURLBASE   => 'http://www.archive.org/download';
 Readonly::Scalar my $IAMETAURLBASE => 'http://www.archive.org/metadata';
-Readonly::Scalar my $META_XML      => '_meta.xml';
 
 Readonly::Scalar my $ENV_AUTHKEYS => 'IAS3KEYS';
 Readonly::Scalar my $VERSION      => '0.7.6';
@@ -485,6 +484,8 @@ sub main {
 
     my $homedir = $ENV{'HOME'};
     $homedir =~ s![^/]$!$&/!;    # ensure $homedir has trailing slash
+
+
 
     if ($homedir) {
         readConfig( $homedir . ".s3cfg" );    # config file for s3cmd
@@ -979,7 +980,7 @@ sub main {
         # Expect header
         push( @headers, 'Expect', '100-continue' );
 
-        my $uri     = $IAS3URLBASE . $uripath;
+        my $uri     = $IAS3_URL_BASE . $uripath;
         my $content = $file->{'path'};
 
         if ($verbose) {
